@@ -34,4 +34,22 @@ Below is a concise overview of the main source files and their exported componen
 
 These components are styled using Tailwind‑like utility classes and rely on the Web Audio API for audio analysis. No API keys or secrets are embedded in the source code.
 
+
+## Creative Visual Enhancements
+
+The project has been upgraded with **6 creative visual enhancements** focused on emulating retro analog CRT hardware, organic dissipation, and advanced math modeling:
+
+1. **Velocity-Based Beam Intensity**: Simulates true analog CRT cathode-ray behavior. The trace glows intensely where the electron beam moves slowly (e.g. loops, intersections) and fades during fast sweeps. Includes an intensity falloff curve slider.
+2. **FFT Spectral Audio Bands**: Incorporates a dedicated FFT frequency analyser splitting audio into bass, mid, and treble bands. The bass triggers global scale pulsations, and the treble introduces fine-grained surface noise to mathematical shapes.
+3. **Dynamic HSL Color Cycling**: Extends the coloring engine with three selectable modes:
+   - **Static**: Choose a single flat trace color.
+   - **Rainbow Cycle**: Slow, time-driven color shifts with configurable speed.
+   - **Audio Reactive**: Maps real-time audio bass to hue and treble to saturation.
+4. **Strange Attractors (Lorenz & Clifford)**: Adds advanced 3D and 2D chaotic system models:
+   - **Lorenz Attractor**: 3D chaotic ODE projected with perspective.
+   - **Clifford Attractor**: 2D iterated algebraic map.
+   - Both react to audio bass for dynamic, live parameter distortion.
+5. **CRT Barrel Distortion**: Uses GPU-accelerated 3D CSS perspective transforms and a radial gradient vignette overlay to simulate curved glass tube monitors without the high CPU cost of pixel manipulation.
+6. **Perlin Flow-Field Feedback**: Implements a lightweight 2D noise generator to warp persistent feedback traces via a 32x32 tile grid. Creates organic, smoke-like dissipation trails.
+
 ---
