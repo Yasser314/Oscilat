@@ -66,7 +66,8 @@ export default function App() {
     rgbShift: 0, scanlines: 0.3, feedback: 0, wave: 0,
     kal: 0, mirror: 'none',
     velocityIntensity: true, intensityExp: 1.0,
-    fftReactive: true
+    fftReactive: true,
+    colorMode: 'static', hueSpeed: 20, hueSat: 100, hueLight: 55
   });
 
   const updateCfg = (key: string, val: any) => {
@@ -345,11 +346,22 @@ export default function App() {
       ctx.globalCompositeOperation = 'screen';
 
       const drawAll = () => {
+        // Resolve dynamic color
+        let activeColor = c.color;
+        if (c.colorMode === 'cycle') {
+          const hue = (t * c.hueSpeed) % 360;
+          activeColor = `hsl(${hue}, ${c.hueSat}%, ${c.hueLight}%)`;
+        } else if (c.colorMode === 'audio') {
+          const { bass: b, treble: tr } = fftBands.current;
+          const hue = (b * 360 + t * 10) % 360;
+          const sat = 50 + tr * 50;
+          activeColor = `hsl(${hue}, ${sat}%, ${c.hueLight}%)`;
+        }
         if (c.rgbShift > 0) {
           drawPath('#ff0000', -c.rgbShift * 20, 0);
           drawPath('#00ff00', 0, 0);
           drawPath('#0000ff', c.rgbShift * 20, 0);
-        } else drawPath(c.color);
+        } else drawPath(activeColor);
       };
 
       const mirrors = c.mirror === 'quad' ? [[1, 1], [-1, 1], [1, -1], [-1, -1]] :
@@ -461,10 +473,29 @@ export default function App() {
           )}
 
           <Section title="Visuals" icon={Camera}>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs text-gray-300">Trace Color</span>
-              <input type="color" value={c.color} onChange={e => updateCfg('color', e.target.value)} className="w-8 h-8 rounded cursor-pointer bg-transparent border-0 p-0" />
+            <div className="flex flex-col gap-1 mb-2">
+              <label className="text-[10px] text-gray-400 uppercase tracking-wide">Color Mode</label>
+              <select className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded p-1 outline-none" value={c.colorMode} onChange={e => updateCfg('colorMode', e.target.value)}>
+                <option value="static">Static</option>
+                <option value="cycle">Rainbow Cycle</option>
+                <option value="audio">Audio Reactive</option>
+              </select>
             </div>
+            {c.colorMode === 'static' && (
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-gray-300">Trace Color</span>
+                <input type="color" value={c.color} onChange={e => updateCfg('color', e.target.value)} className="w-8 h-8 rounded cursor-pointer bg-transparent border-0 p-0" />
+              </div>
+            )}
+            {c.colorMode === 'cycle' && (
+              <Slider label="Hue Speed" min={1} max={100} step={1} val={c.hueSpeed} onChange={(v: any) => updateCfg('hueSpeed', v)} />
+            )}
+            {(c.colorMode === 'cycle' || c.colorMode === 'audio') && (
+              <div className="space-y-2">
+                <Slider label="Saturation" min={0} max={100} step={1} val={c.hueSat} onChange={(v: any) => updateCfg('hueSat', v)} />
+                <Slider label="Lightness" min={20} max={80} step={1} val={c.hueLight} onChange={(v: any) => updateCfg('hueLight', v)} />
+              </div>
+            )}
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-gray-300">Background</span>
               <input type="color" value={c.bg} onChange={e => updateCfg('bg', e.target.value)} className="w-8 h-8 rounded cursor-pointer bg-transparent border-0 p-0" />
