@@ -67,7 +67,9 @@ export default function App() {
     kal: 0, mirror: 'none',
     velocityIntensity: true, intensityExp: 1.0,
     fftReactive: true,
-    colorMode: 'static', hueSpeed: 20, hueSat: 100, hueLight: 55
+    colorMode: 'static', hueSpeed: 20, hueSat: 100, hueLight: 55,
+    lorenzSigma: 10, lorenzRho: 28, lorenzBeta: 2.667,
+    cliffordA: -1.4, cliffordB: 1.6, cliffordC: 1.0, cliffordD: 0.7
   });
 
   const updateCfg = (key: string, val: any) => {
@@ -286,16 +288,59 @@ export default function App() {
           } else if (c.mode === 'math_rose') {
             const r = Math.cos(c.roseK * theta + t) * scale;
             x = r * Math.cos(theta); y = r * Math.sin(theta);
+          } else if (c.mode === 'math_lorenz') {
+            // Skip theta-based generation; handled below
+          } else if (c.mode === 'math_clifford') {
+            // Skip theta-based generation; handled below
           }
           // FFT-driven perturbations for math modes
-          if (c.fftReactive && (bass > 0 || mid > 0 || treble > 0)) {
+          if (c.fftReactive && (bass > 0 || mid > 0 || treble > 0) && c.mode !== 'math_lorenz' && c.mode !== 'math_clifford') {
             const fftScale = 1 + bass * 0.3;
             x *= fftScale;
             y *= fftScale;
             x += Math.sin(theta * 20 + t * 5) * treble * scale * 0.08;
             y += Math.cos(theta * 20 + t * 5) * treble * scale * 0.08;
           }
-          pts.push({ x, y });
+          if (c.mode !== 'math_lorenz' && c.mode !== 'math_clifford') {
+            pts.push({ x, y });
+          }
+        }
+
+        // Lorenz attractor (iterative ODE, separate from theta loop)
+        if (c.mode === 'math_lorenz') {
+          const dt = 0.005;
+          const sigma = c.lorenzSigma;
+          const rho = c.lorenzRho + bass * 8;
+          const beta = c.lorenzBeta;
+          let lx = 0.1, ly = 0, lz = 0;
+          const scaleL = scale * 0.02;
+          for (let i = 0; i < 8000; i++) {
+            const dxL = sigma * (ly - lx) * dt;
+            const dyL = (lx * (rho - lz) - ly) * dt;
+            const dzL = (lx * ly - beta * lz) * dt;
+            lx += dxL; ly += dyL; lz += dzL;
+            // 3D perspective projection
+            const pZ = (lz * 0.02) + 2.5;
+            const sx = (lx * scaleL / pZ) * 2;
+            const sy = (ly * scaleL / pZ) * 2;
+            pts.push({ x: sx, y: sy });
+          }
+        }
+
+        // Clifford attractor (iterated map)
+        if (c.mode === 'math_clifford') {
+          const a = c.cliffordA + bass * 0.3;
+          const b = c.cliffordB;
+          const ca = c.cliffordC;
+          const d = c.cliffordD;
+          let cx2 = 0.1, cy2 = 0.1;
+          const scaleC = scale * 0.25;
+          for (let i = 0; i < 10000; i++) {
+            const nx = Math.sin(a * cy2) + ca * Math.cos(a * cx2);
+            const ny = Math.sin(b * cx2) + d * Math.cos(b * cy2);
+            cx2 = nx; cy2 = ny;
+            pts.push({ x: cx2 * scaleC, y: cy2 * scaleC });
+          }
         }
       }
 
@@ -407,7 +452,7 @@ export default function App() {
         <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
           <Section title="Mode & Source" icon={Settings2}>
             <div className="grid grid-cols-2 gap-2 mb-2">
-              {['audio_xy', 'audio_wave', 'math_lissajous', 'math_spiro', 'math_rose'].map(m => (
+              {['audio_xy', 'audio_wave', 'math_lissajous', 'math_spiro', 'math_rose', 'math_lorenz', 'math_clifford'].map(m => (
                 <button key={m} onClick={() => { updateCfg('mode', m); updateCfg('showTektronix', false); setShowTektronix(false); }} className={`p-1.5 text-[10px] rounded border uppercase ${c.mode === m && !showTektronix ? 'bg-green-500/20 border-green-500 text-green-400' : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'}`}>
                   {m.replace('_', ' ')}
                 </button>
@@ -468,6 +513,21 @@ export default function App() {
               )}
               {c.mode === 'math_rose' && (
                 <Slider label="Petals (k)" min={1} max={20} step={1} val={c.roseK} onChange={(v: any) => updateCfg('roseK', v)} />
+              )}
+              {c.mode === 'math_lorenz' && (
+                <>
+                  <Slider label="Sigma (σ)" min={1} max={30} step={0.5} val={c.lorenzSigma} onChange={(v: any) => updateCfg('lorenzSigma', v)} />
+                  <Slider label="Rho (ρ)" min={10} max={50} step={0.5} val={c.lorenzRho} onChange={(v: any) => updateCfg('lorenzRho', v)} />
+                  <Slider label="Beta (β)" min={0.5} max={8} step={0.1} val={c.lorenzBeta} onChange={(v: any) => updateCfg('lorenzBeta', v)} />
+                </>
+              )}
+              {c.mode === 'math_clifford' && (
+                <>
+                  <Slider label="A" min={-3} max={3} step={0.1} val={c.cliffordA} onChange={(v: any) => updateCfg('cliffordA', v)} />
+                  <Slider label="B" min={-3} max={3} step={0.1} val={c.cliffordB} onChange={(v: any) => updateCfg('cliffordB', v)} />
+                  <Slider label="C" min={-3} max={3} step={0.1} val={c.cliffordC} onChange={(v: any) => updateCfg('cliffordC', v)} />
+                  <Slider label="D" min={-3} max={3} step={0.1} val={c.cliffordD} onChange={(v: any) => updateCfg('cliffordD', v)} />
+                </>
               )}
             </Section>
           )}
