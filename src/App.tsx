@@ -69,7 +69,8 @@ export default function App() {
     fftReactive: true,
     colorMode: 'static', hueSpeed: 20, hueSat: 100, hueLight: 55,
     lorenzSigma: 10, lorenzRho: 28, lorenzBeta: 2.667,
-    cliffordA: -1.4, cliffordB: 1.6, cliffordC: 1.0, cliffordD: 0.7
+    cliffordA: -1.4, cliffordB: 1.6, cliffordC: 1.0, cliffordD: 0.7,
+    barrelDistortion: 0, vignette: 0
   });
 
   const updateCfg = (key: string, val: any) => {
@@ -576,6 +577,8 @@ export default function App() {
             <Slider label="Scanlines" min={0} max={1} step={0.01} val={c.scanlines} onChange={(v: any) => updateCfg('scanlines', v)} />
             <Slider label="Feedback" min={0} max={1} step={0.01} val={c.feedback} onChange={(v: any) => updateCfg('feedback', v)} />
             <Slider label="Wave Distort" min={0} max={1} step={0.01} val={c.wave} onChange={(v: any) => updateCfg('wave', v)} />
+            <Slider label="CRT Curvature" min={0} max={0.5} step={0.01} val={c.barrelDistortion} onChange={(v: any) => updateCfg('barrelDistortion', v)} />
+            <Slider label="Vignette" min={0} max={1} step={0.01} val={c.vignette} onChange={(v: any) => updateCfg('vignette', v)} />
           </Section>
 
           <Section title="Symmetry" icon={Layers}>
@@ -608,7 +611,9 @@ export default function App() {
         </div>
       </div>
 
-      <div className="flex-1 relative bg-black cursor-crosshair overflow-hidden">
+      <div className="flex-1 relative bg-black cursor-crosshair overflow-hidden" style={{
+        perspective: '1000px'
+      }}>
         {showTektronix && (
           <TektronixVectorScope
             analyserL={analyserL.current}
@@ -617,9 +622,26 @@ export default function App() {
             hasAudio={hasAudio}
           />
         )}
-        <canvas ref={canvasRef} className={`absolute inset-0 w-full h-full ${showTektronix ? 'hidden' : ''}`} />
+        
+        <div className={`absolute inset-0 w-full h-full ${showTektronix ? 'hidden' : ''}`} style={{
+          transform: c.barrelDistortion > 0 ? `scale(${1 + c.barrelDistortion * 0.5}) perspective(800px) rotateX(${c.barrelDistortion * 2}deg) rotateY(${c.barrelDistortion * 2}deg)` : 'none',
+          transition: 'transform 0.1s ease-out'
+        }}>
+          <canvas ref={canvasRef} className="w-full h-full" />
+        </div>
+
+        {c.vignette > 0 && !showTektronix && (
+          <div 
+            className="absolute inset-0 pointer-events-none z-40" 
+            style={{ 
+              background: `radial-gradient(circle at center, transparent 30%, rgba(0,0,0,${c.vignette}) 100%)`,
+              boxShadow: `inset 0 0 ${c.vignette * 100}px rgba(0,0,0,${c.vignette})`
+            }} 
+          />
+        )}
+
         {isRecording && !showTektronix && (
-          <div className="absolute top-4 right-4 flex items-center gap-2 bg-red-500/20 border border-red-500/50 text-red-400 px-3 py-1.5 rounded-full text-xs font-bold animate-pulse">
+          <div className="absolute top-4 right-4 flex items-center gap-2 bg-red-500/20 border border-red-500/50 text-red-400 px-3 py-1.5 rounded-full text-xs font-bold animate-pulse z-50">
             <div className="w-2 h-2 bg-red-500 rounded-full" /> REC
           </div>
         )}
