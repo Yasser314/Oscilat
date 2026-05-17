@@ -35,6 +35,20 @@ const Toggle = ({ label, val, onChange }: any) => (
   </label>
 );
 
+const lerp = (a: number, b: number, t: number) => a + t * (b - a);
+const random2D = (x: number, y: number) => {
+  const n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+  return n - Math.floor(n);
+};
+const smoothNoise2D = (x: number, y: number) => {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const a = random2D(ix, iy), b = random2D(ix + 1, iy);
+  const c = random2D(ix, iy + 1), d = random2D(ix + 1, iy + 1);
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  return lerp(lerp(a, b, ux), lerp(c, d, ux), uy);
+};
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const reqRef = useRef<number>(0);
@@ -51,6 +65,7 @@ export default function App() {
   const fftBands = useRef({ bass: 0, mid: 0, treble: 0 });
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const [, setUiState] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
@@ -70,7 +85,8 @@ export default function App() {
     colorMode: 'static', hueSpeed: 20, hueSat: 100, hueLight: 55,
     lorenzSigma: 10, lorenzRho: 28, lorenzBeta: 2.667,
     cliffordA: -1.4, cliffordB: 1.6, cliffordC: 1.0, cliffordD: 0.7,
-    barrelDistortion: 0, vignette: 0
+    barrelDistortion: 0, vignette: 0,
+    flowField: false, flowFieldScale: 0.005
   });
 
   const updateCfg = (key: string, val: any) => {
@@ -222,13 +238,44 @@ export default function App() {
       ctx.globalAlpha = 1;
 
       if (c.feedback > 0) {
-        ctx.translate(cx, cy);
-        const s = 1 + c.feedback * 0.05;
-        ctx.scale(s, s);
-        ctx.rotate(c.feedback * 0.02);
-        ctx.translate(-cx, -cy);
-        ctx.globalAlpha = 0.9;
-        ctx.drawImage(canvas, 0, 0);
+        if (c.flowField) {
+          // Flow-field organic feedback
+          if (!offscreenCanvasRef.current) offscreenCanvasRef.current = document.createElement('canvas');
+          const off = offscreenCanvasRef.current;
+          if (off.width !== w || off.height !== h) { off.width = w; off.height = h; }
+          const offCtx = off.getContext('2d')!;
+          offCtx.clearRect(0, 0, w, h);
+          offCtx.drawImage(canvas, 0, 0);
+
+          ctx.globalAlpha = 0.9;
+          const tileSize = 32;
+          const cols = Math.ceil(w / tileSize);
+          const rows = Math.ceil(h / tileSize);
+          const timeOff = t * 0.5;
+          const scale = c.flowFieldScale;
+          const strength = c.feedback * 10;
+
+          for (let y = 0; y < rows; y++) {
+            for (let x = 0; x < cols; x++) {
+              const px = x * tileSize + tileSize / 2;
+              const py = y * tileSize + tileSize / 2;
+              const angle = smoothNoise2D(px * scale, py * scale + timeOff) * Math.PI * 4;
+              const dx = Math.cos(angle) * strength;
+              const dy = Math.sin(angle) * strength;
+              const sx = x * tileSize, sy = y * tileSize;
+              ctx.drawImage(off, sx, sy, tileSize, tileSize, sx + dx, sy + dy, tileSize, tileSize);
+            }
+          }
+        } else {
+          // Standard geometric feedback
+          ctx.translate(cx, cy);
+          const s = 1 + c.feedback * 0.05;
+          ctx.scale(s, s);
+          ctx.rotate(c.feedback * 0.02);
+          ctx.translate(-cx, -cy);
+          ctx.globalAlpha = 0.9;
+          ctx.drawImage(canvas, 0, 0);
+        }
         ctx.globalAlpha = 1;
         ctx.setTransform(1, 0, 0, 1, 0, 0);
       }
@@ -576,6 +623,14 @@ export default function App() {
             <Slider label="RGB Shift" min={0} max={1} step={0.01} val={c.rgbShift} onChange={(v: any) => updateCfg('rgbShift', v)} />
             <Slider label="Scanlines" min={0} max={1} step={0.01} val={c.scanlines} onChange={(v: any) => updateCfg('scanlines', v)} />
             <Slider label="Feedback" min={0} max={1} step={0.01} val={c.feedback} onChange={(v: any) => updateCfg('feedback', v)} />
+            {c.feedback > 0 && (
+              <>
+                <Toggle label="Flow Field" val={c.flowField} onChange={(v: any) => updateCfg('flowField', v)} />
+                {c.flowField && (
+                  <Slider label="Flow Scale" min={0.001} max={0.02} step={0.001} val={c.flowFieldScale} onChange={(v: any) => updateCfg('flowFieldScale', v)} />
+                )}
+              </>
+            )}
             <Slider label="Wave Distort" min={0} max={1} step={0.01} val={c.wave} onChange={(v: any) => updateCfg('wave', v)} />
             <Slider label="CRT Curvature" min={0} max={0.5} step={0.01} val={c.barrelDistortion} onChange={(v: any) => updateCfg('barrelDistortion', v)} />
             <Slider label="Vignette" min={0} max={1} step={0.01} val={c.vignette} onChange={(v: any) => updateCfg('vignette', v)} />
