@@ -46,6 +46,9 @@ export default function App() {
   const dataL = useRef<Float32Array>(new Float32Array(2048));
   const dataR = useRef<Float32Array>(new Float32Array(2048));
   const delayNodeRef = useRef<DelayNode | null>(null);
+  const analyserFFT = useRef<AnalyserNode | null>(null);
+  const fftData = useRef<Uint8Array>(new Uint8Array(512));
+  const fftBands = useRef({ bass: 0, mid: 0, treble: 0 });
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
 
@@ -62,7 +65,8 @@ export default function App() {
     mathA: 3, mathB: 2, mathC: 4, delta: 0, phi: 0, spiroR: 100, spiror: 20, spiroD: 50, roseK: 4,
     rgbShift: 0, scanlines: 0.3, feedback: 0, wave: 0,
     kal: 0, mirror: 'none',
-    velocityIntensity: true, intensityExp: 1.0
+    velocityIntensity: true, intensityExp: 1.0,
+    fftReactive: true
   });
 
   const updateCfg = (key: string, val: any) => {
@@ -107,6 +111,13 @@ export default function App() {
       gL.connect(aL);
       gR.connect(delayR);
       delayR.connect(aR);
+
+      // FFT analyser for spectral bands
+      const aFFT = ctx.createAnalyser();
+      aFFT.fftSize = 1024;
+      aFFT.smoothingTimeConstant = 0.8;
+      source.connect(aFFT);
+      analyserFFT.current = aFFT;
 
       audioCtx.current = ctx; analyserL.current = aL; analyserR.current = aR;
       gainL.current = gL; gainR.current = gR;
@@ -232,6 +243,21 @@ export default function App() {
       let pts: { x: number, y: number }[] = [];
       const t = time * 0.001;
 
+      // Compute FFT bands (bass / mid / treble)
+      let bass = 0, mid = 0, treble = 0;
+      if (c.fftReactive && analyserFFT.current) {
+        analyserFFT.current.getByteFrequencyData(fftData.current);
+        const bins = fftData.current;
+        let bSum = 0, mSum = 0, tSum = 0;
+        for (let i = 0; i < 16; i++) bSum += bins[i];
+        for (let i = 16; i < 80; i++) mSum += bins[i];
+        for (let i = 80; i < 256; i++) tSum += bins[i];
+        bass = bSum / (16 * 255);
+        mid = mSum / (64 * 255);
+        treble = tSum / (176 * 255);
+        fftBands.current = { bass, mid, treble };
+      }
+
       if (c.mode.startsWith('audio') && analyserL.current && analyserR.current) {
         analyserL.current.getFloatTimeDomainData(dataL.current);
         analyserR.current.getFloatTimeDomainData(dataR.current);
@@ -259,6 +285,14 @@ export default function App() {
           } else if (c.mode === 'math_rose') {
             const r = Math.cos(c.roseK * theta + t) * scale;
             x = r * Math.cos(theta); y = r * Math.sin(theta);
+          }
+          // FFT-driven perturbations for math modes
+          if (c.fftReactive && (bass > 0 || mid > 0 || treble > 0)) {
+            const fftScale = 1 + bass * 0.3;
+            x *= fftScale;
+            y *= fftScale;
+            x += Math.sin(theta * 20 + t * 5) * treble * scale * 0.08;
+            y += Math.cos(theta * 20 + t * 5) * treble * scale * 0.08;
           }
           pts.push({ x, y });
         }
@@ -387,6 +421,7 @@ export default function App() {
                 <Slider label="Gain L" min={0} max={5} step={0.1} val={c.gainL} onChange={(v: any) => updateCfg('gainL', v)} />
                 <Slider label="Gain R" min={0} max={5} step={0.1} val={c.gainR} onChange={(v: any) => updateCfg('gainR', v)} />
                 <Slider label="Phase L/R" min={0} max={0.1} step={0.001} val={c.audioDelay || 0} onChange={(v: any) => updateCfg('audioDelay', v)} />
+                <Toggle label="FFT Reactive" val={c.fftReactive} onChange={(v: any) => updateCfg('fftReactive', v)} />
               </div>
             )}
           </Section>
