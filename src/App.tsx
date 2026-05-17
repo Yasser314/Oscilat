@@ -61,7 +61,8 @@ export default function App() {
     phosphor: 0.15, glow: 10, color: '#00ff41', bg: '#000000', grid: true,
     mathA: 3, mathB: 2, mathC: 4, delta: 0, phi: 0, spiroR: 100, spiror: 20, spiroD: 50, roseK: 4,
     rgbShift: 0, scanlines: 0.3, feedback: 0, wave: 0,
-    kal: 0, mirror: 'none'
+    kal: 0, mirror: 'none',
+    velocityIntensity: true, intensityExp: 1.0
   });
 
   const updateCfg = (key: string, val: any) => {
@@ -271,14 +272,38 @@ export default function App() {
       }
 
       const drawPath = (color: string, offsetX = 0, offsetY = 0) => {
-        ctx.beginPath();
-        for (let i = 0; i < pts.length; i++) {
-          if (i === 0) ctx.moveTo(pts[i].x + offsetX, pts[i].y + offsetY);
-          else ctx.lineTo(pts[i].x + offsetX, pts[i].y + offsetY);
+        if (!c.velocityIntensity) {
+          // Original fast path
+          ctx.beginPath();
+          for (let i = 0; i < pts.length; i++) {
+            if (i === 0) ctx.moveTo(pts[i].x + offsetX, pts[i].y + offsetY);
+            else ctx.lineTo(pts[i].x + offsetX, pts[i].y + offsetY);
+          }
+          ctx.strokeStyle = color; ctx.lineWidth = 2;
+          ctx.shadowBlur = c.glow; ctx.shadowColor = color;
+          ctx.stroke();
+          return;
         }
-        ctx.strokeStyle = color; ctx.lineWidth = 2;
-        ctx.shadowBlur = c.glow; ctx.shadowColor = color;
-        ctx.stroke();
+        // Velocity-based intensity: bright where slow, dim where fast
+        const maxDist = Math.max(w, h) * 0.15;
+        const exp = c.intensityExp;
+        for (let i = 1; i < pts.length; i++) {
+          const dx = pts[i].x - pts[i - 1].x;
+          const dy = pts[i].y - pts[i - 1].y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const norm = Math.min(dist / maxDist, 1);
+          const intensity = Math.pow(1 - norm, exp);
+          ctx.beginPath();
+          ctx.moveTo(pts[i - 1].x + offsetX, pts[i - 1].y + offsetY);
+          ctx.lineTo(pts[i].x + offsetX, pts[i].y + offsetY);
+          ctx.globalAlpha = 0.15 + intensity * 0.85;
+          ctx.lineWidth = 1 + intensity * 3;
+          ctx.shadowBlur = intensity * c.glow * 1.5;
+          ctx.shadowColor = color;
+          ctx.strokeStyle = color;
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
       };
 
       ctx.save();
@@ -413,6 +438,10 @@ export default function App() {
             <div className="mt-2 space-y-2">
               <Slider label="Phosphor" min={0} max={0.99} step={0.01} val={c.phosphor} onChange={(v: any) => updateCfg('phosphor', v)} />
               <Slider label="Glow Bloom" min={0} max={50} step={1} val={c.glow} onChange={(v: any) => updateCfg('glow', v)} />
+              <Toggle label="Velocity Intensity" val={c.velocityIntensity} onChange={(v: any) => updateCfg('velocityIntensity', v)} />
+              {c.velocityIntensity && (
+                <Slider label="Intensity Curve" min={0.3} max={3} step={0.1} val={c.intensityExp} onChange={(v: any) => updateCfg('intensityExp', v)} />
+              )}
             </div>
           </Section>
 
