@@ -35,6 +35,20 @@ const Toggle = ({ label, val, onChange }: any) => (
   </label>
 );
 
+const lerp = (a: number, b: number, t: number) => a + t * (b - a);
+const random2D = (x: number, y: number) => {
+  const n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+  return n - Math.floor(n);
+};
+const smoothNoise2D = (x: number, y: number) => {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const a = random2D(ix, iy), b = random2D(ix + 1, iy);
+  const c = random2D(ix, iy + 1), d = random2D(ix + 1, iy + 1);
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  return lerp(lerp(a, b, ux), lerp(c, d, ux), uy);
+};
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const reqRef = useRef<number>(0);
@@ -46,8 +60,12 @@ export default function App() {
   const dataL = useRef<Float32Array>(new Float32Array(2048));
   const dataR = useRef<Float32Array>(new Float32Array(2048));
   const delayNodeRef = useRef<DelayNode | null>(null);
+  const analyserFFT = useRef<AnalyserNode | null>(null);
+  const fftData = useRef<Uint8Array>(new Uint8Array(512));
+  const fftBands = useRef({ bass: 0, mid: 0, treble: 0 });
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const [, setUiState] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
@@ -61,7 +79,14 @@ export default function App() {
     phosphor: 0.15, glow: 10, color: '#00ff41', bg: '#000000', grid: true,
     mathA: 3, mathB: 2, mathC: 4, delta: 0, phi: 0, spiroR: 100, spiror: 20, spiroD: 50, roseK: 4,
     rgbShift: 0, scanlines: 0.3, feedback: 0, wave: 0,
-    kal: 0, mirror: 'none'
+    kal: 0, mirror: 'none',
+    velocityIntensity: true, intensityExp: 1.0,
+    fftReactive: true,
+    colorMode: 'static', hueSpeed: 20, hueSat: 100, hueLight: 55,
+    lorenzSigma: 10, lorenzRho: 28, lorenzBeta: 2.667,
+    cliffordA: -1.4, cliffordB: 1.6, cliffordC: 1.0, cliffordD: 0.7,
+    barrelDistortion: 0, vignette: 0,
+    flowField: false, flowFieldScale: 0.005
   });
 
   const updateCfg = (key: string, val: any) => {
@@ -106,6 +131,13 @@ export default function App() {
       gL.connect(aL);
       gR.connect(delayR);
       delayR.connect(aR);
+
+      // FFT analyser for spectral bands
+      const aFFT = ctx.createAnalyser();
+      aFFT.fftSize = 1024;
+      aFFT.smoothingTimeConstant = 0.8;
+      source.connect(aFFT);
+      analyserFFT.current = aFFT;
 
       audioCtx.current = ctx; analyserL.current = aL; analyserR.current = aR;
       gainL.current = gL; gainR.current = gR;
@@ -206,13 +238,44 @@ export default function App() {
       ctx.globalAlpha = 1;
 
       if (c.feedback > 0) {
-        ctx.translate(cx, cy);
-        const s = 1 + c.feedback * 0.05;
-        ctx.scale(s, s);
-        ctx.rotate(c.feedback * 0.02);
-        ctx.translate(-cx, -cy);
-        ctx.globalAlpha = 0.9;
-        ctx.drawImage(canvas, 0, 0);
+        if (c.flowField) {
+          // Flow-field organic feedback
+          if (!offscreenCanvasRef.current) offscreenCanvasRef.current = document.createElement('canvas');
+          const off = offscreenCanvasRef.current;
+          if (off.width !== w || off.height !== h) { off.width = w; off.height = h; }
+          const offCtx = off.getContext('2d')!;
+          offCtx.clearRect(0, 0, w, h);
+          offCtx.drawImage(canvas, 0, 0);
+
+          ctx.globalAlpha = 0.9;
+          const tileSize = 32;
+          const cols = Math.ceil(w / tileSize);
+          const rows = Math.ceil(h / tileSize);
+          const timeOff = t * 0.5;
+          const scale = c.flowFieldScale;
+          const strength = c.feedback * 10;
+
+          for (let y = 0; y < rows; y++) {
+            for (let x = 0; x < cols; x++) {
+              const px = x * tileSize + tileSize / 2;
+              const py = y * tileSize + tileSize / 2;
+              const angle = smoothNoise2D(px * scale, py * scale + timeOff) * Math.PI * 4;
+              const dx = Math.cos(angle) * strength;
+              const dy = Math.sin(angle) * strength;
+              const sx = x * tileSize, sy = y * tileSize;
+              ctx.drawImage(off, sx, sy, tileSize, tileSize, sx + dx, sy + dy, tileSize, tileSize);
+            }
+          }
+        } else {
+          // Standard geometric feedback
+          ctx.translate(cx, cy);
+          const s = 1 + c.feedback * 0.05;
+          ctx.scale(s, s);
+          ctx.rotate(c.feedback * 0.02);
+          ctx.translate(-cx, -cy);
+          ctx.globalAlpha = 0.9;
+          ctx.drawImage(canvas, 0, 0);
+        }
         ctx.globalAlpha = 1;
         ctx.setTransform(1, 0, 0, 1, 0, 0);
       }
@@ -230,6 +293,21 @@ export default function App() {
 
       let pts: { x: number, y: number }[] = [];
       const t = time * 0.001;
+
+      // Compute FFT bands (bass / mid / treble)
+      let bass = 0, mid = 0, treble = 0;
+      if (c.fftReactive && analyserFFT.current) {
+        analyserFFT.current.getByteFrequencyData(fftData.current);
+        const bins = fftData.current;
+        let bSum = 0, mSum = 0, tSum = 0;
+        for (let i = 0; i < 16; i++) bSum += bins[i];
+        for (let i = 16; i < 80; i++) mSum += bins[i];
+        for (let i = 80; i < 256; i++) tSum += bins[i];
+        bass = bSum / (16 * 255);
+        mid = mSum / (64 * 255);
+        treble = tSum / (176 * 255);
+        fftBands.current = { bass, mid, treble };
+      }
 
       if (c.mode.startsWith('audio') && analyserL.current && analyserR.current) {
         analyserL.current.getFloatTimeDomainData(dataL.current);
@@ -258,8 +336,59 @@ export default function App() {
           } else if (c.mode === 'math_rose') {
             const r = Math.cos(c.roseK * theta + t) * scale;
             x = r * Math.cos(theta); y = r * Math.sin(theta);
+          } else if (c.mode === 'math_lorenz') {
+            // Skip theta-based generation; handled below
+          } else if (c.mode === 'math_clifford') {
+            // Skip theta-based generation; handled below
           }
-          pts.push({ x, y });
+          // FFT-driven perturbations for math modes
+          if (c.fftReactive && (bass > 0 || mid > 0 || treble > 0) && c.mode !== 'math_lorenz' && c.mode !== 'math_clifford') {
+            const fftScale = 1 + bass * 0.3;
+            x *= fftScale;
+            y *= fftScale;
+            x += Math.sin(theta * 20 + t * 5) * treble * scale * 0.08;
+            y += Math.cos(theta * 20 + t * 5) * treble * scale * 0.08;
+          }
+          if (c.mode !== 'math_lorenz' && c.mode !== 'math_clifford') {
+            pts.push({ x, y });
+          }
+        }
+
+        // Lorenz attractor (iterative ODE, separate from theta loop)
+        if (c.mode === 'math_lorenz') {
+          const dt = 0.005;
+          const sigma = c.lorenzSigma;
+          const rho = c.lorenzRho + bass * 8;
+          const beta = c.lorenzBeta;
+          let lx = 0.1, ly = 0, lz = 0;
+          const scaleL = scale * 0.02;
+          for (let i = 0; i < 8000; i++) {
+            const dxL = sigma * (ly - lx) * dt;
+            const dyL = (lx * (rho - lz) - ly) * dt;
+            const dzL = (lx * ly - beta * lz) * dt;
+            lx += dxL; ly += dyL; lz += dzL;
+            // 3D perspective projection
+            const pZ = (lz * 0.02) + 2.5;
+            const sx = (lx * scaleL / pZ) * 2;
+            const sy = (ly * scaleL / pZ) * 2;
+            pts.push({ x: sx, y: sy });
+          }
+        }
+
+        // Clifford attractor (iterated map)
+        if (c.mode === 'math_clifford') {
+          const a = c.cliffordA + bass * 0.3;
+          const b = c.cliffordB;
+          const ca = c.cliffordC;
+          const d = c.cliffordD;
+          let cx2 = 0.1, cy2 = 0.1;
+          const scaleC = scale * 0.25;
+          for (let i = 0; i < 10000; i++) {
+            const nx = Math.sin(a * cy2) + ca * Math.cos(a * cx2);
+            const ny = Math.sin(b * cx2) + d * Math.cos(b * cy2);
+            cx2 = nx; cy2 = ny;
+            pts.push({ x: cx2 * scaleC, y: cy2 * scaleC });
+          }
         }
       }
 
@@ -271,14 +400,38 @@ export default function App() {
       }
 
       const drawPath = (color: string, offsetX = 0, offsetY = 0) => {
-        ctx.beginPath();
-        for (let i = 0; i < pts.length; i++) {
-          if (i === 0) ctx.moveTo(pts[i].x + offsetX, pts[i].y + offsetY);
-          else ctx.lineTo(pts[i].x + offsetX, pts[i].y + offsetY);
+        if (!c.velocityIntensity) {
+          // Original fast path
+          ctx.beginPath();
+          for (let i = 0; i < pts.length; i++) {
+            if (i === 0) ctx.moveTo(pts[i].x + offsetX, pts[i].y + offsetY);
+            else ctx.lineTo(pts[i].x + offsetX, pts[i].y + offsetY);
+          }
+          ctx.strokeStyle = color; ctx.lineWidth = 2;
+          ctx.shadowBlur = c.glow; ctx.shadowColor = color;
+          ctx.stroke();
+          return;
         }
-        ctx.strokeStyle = color; ctx.lineWidth = 2;
-        ctx.shadowBlur = c.glow; ctx.shadowColor = color;
-        ctx.stroke();
+        // Velocity-based intensity: bright where slow, dim where fast
+        const maxDist = Math.max(w, h) * 0.15;
+        const exp = c.intensityExp;
+        for (let i = 1; i < pts.length; i++) {
+          const dx = pts[i].x - pts[i - 1].x;
+          const dy = pts[i].y - pts[i - 1].y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const norm = Math.min(dist / maxDist, 1);
+          const intensity = Math.pow(1 - norm, exp);
+          ctx.beginPath();
+          ctx.moveTo(pts[i - 1].x + offsetX, pts[i - 1].y + offsetY);
+          ctx.lineTo(pts[i].x + offsetX, pts[i].y + offsetY);
+          ctx.globalAlpha = 0.15 + intensity * 0.85;
+          ctx.lineWidth = 1 + intensity * 3;
+          ctx.shadowBlur = intensity * c.glow * 1.5;
+          ctx.shadowColor = color;
+          ctx.strokeStyle = color;
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
       };
 
       ctx.save();
@@ -286,11 +439,22 @@ export default function App() {
       ctx.globalCompositeOperation = 'screen';
 
       const drawAll = () => {
+        // Resolve dynamic color
+        let activeColor = c.color;
+        if (c.colorMode === 'cycle') {
+          const hue = (t * c.hueSpeed) % 360;
+          activeColor = `hsl(${hue}, ${c.hueSat}%, ${c.hueLight}%)`;
+        } else if (c.colorMode === 'audio') {
+          const { bass: b, treble: tr } = fftBands.current;
+          const hue = (b * 360 + t * 10) % 360;
+          const sat = 50 + tr * 50;
+          activeColor = `hsl(${hue}, ${sat}%, ${c.hueLight}%)`;
+        }
         if (c.rgbShift > 0) {
           drawPath('#ff0000', -c.rgbShift * 20, 0);
           drawPath('#00ff00', 0, 0);
           drawPath('#0000ff', c.rgbShift * 20, 0);
-        } else drawPath(c.color);
+        } else drawPath(activeColor);
       };
 
       const mirrors = c.mirror === 'quad' ? [[1, 1], [-1, 1], [1, -1], [-1, -1]] :
@@ -336,7 +500,7 @@ export default function App() {
         <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
           <Section title="Mode & Source" icon={Settings2}>
             <div className="grid grid-cols-2 gap-2 mb-2">
-              {['audio_xy', 'audio_wave', 'math_lissajous', 'math_spiro', 'math_rose'].map(m => (
+              {['audio_xy', 'audio_wave', 'math_lissajous', 'math_spiro', 'math_rose', 'math_lorenz', 'math_clifford'].map(m => (
                 <button key={m} onClick={() => { updateCfg('mode', m); updateCfg('showTektronix', false); setShowTektronix(false); }} className={`p-1.5 text-[10px] rounded border uppercase ${c.mode === m && !showTektronix ? 'bg-green-500/20 border-green-500 text-green-400' : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'}`}>
                   {m.replace('_', ' ')}
                 </button>
@@ -362,6 +526,7 @@ export default function App() {
                 <Slider label="Gain L" min={0} max={5} step={0.1} val={c.gainL} onChange={(v: any) => updateCfg('gainL', v)} />
                 <Slider label="Gain R" min={0} max={5} step={0.1} val={c.gainR} onChange={(v: any) => updateCfg('gainR', v)} />
                 <Slider label="Phase L/R" min={0} max={0.1} step={0.001} val={c.audioDelay || 0} onChange={(v: any) => updateCfg('audioDelay', v)} />
+                <Toggle label="FFT Reactive" val={c.fftReactive} onChange={(v: any) => updateCfg('fftReactive', v)} />
               </div>
             )}
           </Section>
@@ -397,14 +562,48 @@ export default function App() {
               {c.mode === 'math_rose' && (
                 <Slider label="Petals (k)" min={1} max={20} step={1} val={c.roseK} onChange={(v: any) => updateCfg('roseK', v)} />
               )}
+              {c.mode === 'math_lorenz' && (
+                <>
+                  <Slider label="Sigma (σ)" min={1} max={30} step={0.5} val={c.lorenzSigma} onChange={(v: any) => updateCfg('lorenzSigma', v)} />
+                  <Slider label="Rho (ρ)" min={10} max={50} step={0.5} val={c.lorenzRho} onChange={(v: any) => updateCfg('lorenzRho', v)} />
+                  <Slider label="Beta (β)" min={0.5} max={8} step={0.1} val={c.lorenzBeta} onChange={(v: any) => updateCfg('lorenzBeta', v)} />
+                </>
+              )}
+              {c.mode === 'math_clifford' && (
+                <>
+                  <Slider label="A" min={-3} max={3} step={0.1} val={c.cliffordA} onChange={(v: any) => updateCfg('cliffordA', v)} />
+                  <Slider label="B" min={-3} max={3} step={0.1} val={c.cliffordB} onChange={(v: any) => updateCfg('cliffordB', v)} />
+                  <Slider label="C" min={-3} max={3} step={0.1} val={c.cliffordC} onChange={(v: any) => updateCfg('cliffordC', v)} />
+                  <Slider label="D" min={-3} max={3} step={0.1} val={c.cliffordD} onChange={(v: any) => updateCfg('cliffordD', v)} />
+                </>
+              )}
             </Section>
           )}
 
           <Section title="Visuals" icon={Camera}>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs text-gray-300">Trace Color</span>
-              <input type="color" value={c.color} onChange={e => updateCfg('color', e.target.value)} className="w-8 h-8 rounded cursor-pointer bg-transparent border-0 p-0" />
+            <div className="flex flex-col gap-1 mb-2">
+              <label className="text-[10px] text-gray-400 uppercase tracking-wide">Color Mode</label>
+              <select className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded p-1 outline-none" value={c.colorMode} onChange={e => updateCfg('colorMode', e.target.value)}>
+                <option value="static">Static</option>
+                <option value="cycle">Rainbow Cycle</option>
+                <option value="audio">Audio Reactive</option>
+              </select>
             </div>
+            {c.colorMode === 'static' && (
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-gray-300">Trace Color</span>
+                <input type="color" value={c.color} onChange={e => updateCfg('color', e.target.value)} className="w-8 h-8 rounded cursor-pointer bg-transparent border-0 p-0" />
+              </div>
+            )}
+            {c.colorMode === 'cycle' && (
+              <Slider label="Hue Speed" min={1} max={100} step={1} val={c.hueSpeed} onChange={(v: any) => updateCfg('hueSpeed', v)} />
+            )}
+            {(c.colorMode === 'cycle' || c.colorMode === 'audio') && (
+              <div className="space-y-2">
+                <Slider label="Saturation" min={0} max={100} step={1} val={c.hueSat} onChange={(v: any) => updateCfg('hueSat', v)} />
+                <Slider label="Lightness" min={20} max={80} step={1} val={c.hueLight} onChange={(v: any) => updateCfg('hueLight', v)} />
+              </div>
+            )}
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-gray-300">Background</span>
               <input type="color" value={c.bg} onChange={e => updateCfg('bg', e.target.value)} className="w-8 h-8 rounded cursor-pointer bg-transparent border-0 p-0" />
@@ -413,6 +612,10 @@ export default function App() {
             <div className="mt-2 space-y-2">
               <Slider label="Phosphor" min={0} max={0.99} step={0.01} val={c.phosphor} onChange={(v: any) => updateCfg('phosphor', v)} />
               <Slider label="Glow Bloom" min={0} max={50} step={1} val={c.glow} onChange={(v: any) => updateCfg('glow', v)} />
+              <Toggle label="Velocity Intensity" val={c.velocityIntensity} onChange={(v: any) => updateCfg('velocityIntensity', v)} />
+              {c.velocityIntensity && (
+                <Slider label="Intensity Curve" min={0.3} max={3} step={0.1} val={c.intensityExp} onChange={(v: any) => updateCfg('intensityExp', v)} />
+              )}
             </div>
           </Section>
 
@@ -420,7 +623,17 @@ export default function App() {
             <Slider label="RGB Shift" min={0} max={1} step={0.01} val={c.rgbShift} onChange={(v: any) => updateCfg('rgbShift', v)} />
             <Slider label="Scanlines" min={0} max={1} step={0.01} val={c.scanlines} onChange={(v: any) => updateCfg('scanlines', v)} />
             <Slider label="Feedback" min={0} max={1} step={0.01} val={c.feedback} onChange={(v: any) => updateCfg('feedback', v)} />
+            {c.feedback > 0 && (
+              <>
+                <Toggle label="Flow Field" val={c.flowField} onChange={(v: any) => updateCfg('flowField', v)} />
+                {c.flowField && (
+                  <Slider label="Flow Scale" min={0.001} max={0.02} step={0.001} val={c.flowFieldScale} onChange={(v: any) => updateCfg('flowFieldScale', v)} />
+                )}
+              </>
+            )}
             <Slider label="Wave Distort" min={0} max={1} step={0.01} val={c.wave} onChange={(v: any) => updateCfg('wave', v)} />
+            <Slider label="CRT Curvature" min={0} max={0.5} step={0.01} val={c.barrelDistortion} onChange={(v: any) => updateCfg('barrelDistortion', v)} />
+            <Slider label="Vignette" min={0} max={1} step={0.01} val={c.vignette} onChange={(v: any) => updateCfg('vignette', v)} />
           </Section>
 
           <Section title="Symmetry" icon={Layers}>
@@ -453,7 +666,9 @@ export default function App() {
         </div>
       </div>
 
-      <div className="flex-1 relative bg-black cursor-crosshair overflow-hidden">
+      <div className="flex-1 relative bg-black cursor-crosshair overflow-hidden" style={{
+        perspective: '1000px'
+      }}>
         {showTektronix && (
           <TektronixVectorScope
             analyserL={analyserL.current}
@@ -462,9 +677,26 @@ export default function App() {
             hasAudio={hasAudio}
           />
         )}
-        <canvas ref={canvasRef} className={`absolute inset-0 w-full h-full ${showTektronix ? 'hidden' : ''}`} />
+        
+        <div className={`absolute inset-0 w-full h-full ${showTektronix ? 'hidden' : ''}`} style={{
+          transform: c.barrelDistortion > 0 ? `scale(${1 + c.barrelDistortion * 0.5}) perspective(800px) rotateX(${c.barrelDistortion * 2}deg) rotateY(${c.barrelDistortion * 2}deg)` : 'none',
+          transition: 'transform 0.1s ease-out'
+        }}>
+          <canvas ref={canvasRef} className="w-full h-full" />
+        </div>
+
+        {c.vignette > 0 && !showTektronix && (
+          <div 
+            className="absolute inset-0 pointer-events-none z-40" 
+            style={{ 
+              background: `radial-gradient(circle at center, transparent 30%, rgba(0,0,0,${c.vignette}) 100%)`,
+              boxShadow: `inset 0 0 ${c.vignette * 100}px rgba(0,0,0,${c.vignette})`
+            }} 
+          />
+        )}
+
         {isRecording && !showTektronix && (
-          <div className="absolute top-4 right-4 flex items-center gap-2 bg-red-500/20 border border-red-500/50 text-red-400 px-3 py-1.5 rounded-full text-xs font-bold animate-pulse">
+          <div className="absolute top-4 right-4 flex items-center gap-2 bg-red-500/20 border border-red-500/50 text-red-400 px-3 py-1.5 rounded-full text-xs font-bold animate-pulse z-50">
             <div className="w-2 h-2 bg-red-500 rounded-full" /> REC
           </div>
         )}
